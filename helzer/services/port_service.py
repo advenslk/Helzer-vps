@@ -16,6 +16,11 @@ class PortService:
                 return port
         raise RuntimeError("no ports available")
 
+    def reserve(self, port: int) -> None:
+        if not self.start <= port <= self.end:
+            raise ValueError("port outside managed range")
+        self._allocated.add(port)
+
     def release(self, port: int) -> None:
         self._allocated.discard(port)
 
