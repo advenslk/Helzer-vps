@@ -9,6 +9,9 @@ class Settings:
     discord_token: str
     admin_guild_id: int
     database_url: str
+    docker_host: str = "unix:///var/run/docker.sock"
+    ai_model: str = ""
+    ai_api_key: str = ""
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -25,4 +28,7 @@ class Settings:
             discord_token=token,
             admin_guild_id=int(guild_id),
             database_url=database_url,
+            docker_host=os.getenv("DOCKER_HOST", "unix:///var/run/docker.sock"),
+            ai_model=os.getenv("AI_MODEL", ""),
+            ai_api_key=os.getenv("AI_API_KEY", ""),
         )
