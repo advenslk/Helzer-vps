@@ -9,14 +9,14 @@ class DockerManager:
     def __init__(self, client: Any):
         self.client = client
 
-    def build_container_config(self, *, name: str, image: str, cpu_cores: int, ram_mb: int) -> dict[str, Any]:
+    def build_container_config(self, *, name: str, image: str, cpu_cores: int, ram_mb: int, host_port: int | None = None) -> dict[str, Any]:
         if image not in self.ALLOWED_IMAGES:
             raise ValueError("Docker image is not allowed")
         if cpu_cores < 1:
             raise ValueError("CPU cores must be at least 1")
         if ram_mb < 128:
             raise ValueError("RAM must be at least 128 MB")
-        return {
+        config: dict[str, Any] = {
             "name": name,
             "image": image,
             "mem_limit": ram_mb * 1024 * 1024,
@@ -26,6 +26,11 @@ class DockerManager:
             "stdin_open": True,
             "restart_policy": {"Name": "unless-stopped"},
         }
+        if host_port is not None:
+            if not 1024 <= host_port <= 65535:
+                raise ValueError("invalid host port")
+            config["ports"] = {"22/tcp": host_port}
+        return config
 
     def capacity(self, reserve_ram_mb: int = 256, reserve_cpu: int = 1) -> dict[str, float]:
         info = self.client.info()
@@ -34,16 +39,10 @@ class DockerManager:
         containers = self.client.containers.list()
         used_ram = sum(float(c.attrs.get("HostConfig", {}).get("Memory", 0)) for c in containers) / 1024 / 1024
         used_cpu = sum(float(c.attrs.get("HostConfig", {}).get("NanoCpus", 0)) / 1_000_000_000 for c in containers)
-        return {
-            "total_ram_mb": total_ram_mb,
-            "available_ram_mb": max(0.0, total_ram_mb - used_ram - reserve_ram_mb),
-            "total_cpu": total_cpu,
-            "available_cpu": max(0.0, total_cpu - used_cpu - reserve_cpu),
-            "containers": float(len(containers)),
-        }
+        return {"total_ram_mb": total_ram_mb, "available_ram_mb": max(0.0, total_ram_mb - used_ram - reserve_ram_mb), "total_cpu": total_cpu, "available_cpu": max(0.0, total_cpu - used_cpu - reserve_cpu), "containers": float(len(containers))}
 
     def can_fit(self, cpu_cores: int, ram_mb: int) -> bool:
-        capacity = self.capacity(reserve_ram_mb=256, reserve_cpu=1)
+        capacity = self.capacity()
         return capacity["available_cpu"] >= cpu_cores and capacity["available_ram_mb"] >= ram_mb
 
     def create(self, **kwargs: Any) -> Any:
