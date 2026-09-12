@@ -9,9 +9,7 @@ class DockerManager:
     def __init__(self, client: Any):
         self.client = client
 
-    def build_container_config(
-        self, *, name: str, image: str, cpu_cores: int, ram_mb: int
-    ) -> dict[str, Any]:
+    def build_container_config(self, *, name: str, image: str, cpu_cores: int, ram_mb: int) -> dict[str, Any]:
         if image not in self.ALLOWED_IMAGES:
             raise ValueError("Docker image is not allowed")
         if cpu_cores < 1:
@@ -26,30 +24,46 @@ class DockerManager:
             "detach": True,
             "tty": True,
             "stdin_open": True,
+            "restart_policy": {"Name": "unless-stopped"},
         }
 
     def create(self, **kwargs: Any) -> Any:
         if self.client is None:
             raise RuntimeError("Docker client is not configured")
-        config = self.build_container_config(**kwargs)
-        return self.client.containers.create(**config)
+        return self.client.containers.create(**self.build_container_config(**kwargs))
 
     def start(self, container_id: str) -> None:
         self._container(container_id).start()
 
     def stop(self, container_id: str) -> None:
-        self._container(container_id).stop()
+        self._container(container_id).stop(timeout=10)
 
     def restart(self, container_id: str) -> None:
-        self._container(container_id).restart()
+        self._container(container_id).restart(timeout=10)
 
     def delete(self, container_id: str) -> None:
         self._container(container_id).remove(force=True)
 
     def logs(self, container_id: str, tail: int = 100) -> str:
-        if tail < 1 or tail > 1000:
+        if not 1 <= tail <= 1000:
             raise ValueError("tail must be between 1 and 1000")
         return self._container(container_id).logs(tail=tail).decode(errors="replace")
+
+    def stats(self, container_id: str) -> dict[str, float]:
+        raw = self._container(container_id).stats(stream=False)
+        cpu = raw.get("cpu_stats", {})
+        prev = raw.get("precpu_stats", {})
+        cpu_delta = cpu.get("cpu_usage", {}).get("total_usage", 0) - prev.get("cpu_usage", {}).get("total_usage", 0)
+        system_delta = cpu.get("system_cpu_usage", 0) - prev.get("system_cpu_usage", 0)
+        online = cpu.get("online_cpus") or len(cpu.get("cpu_usage", {}).get("percpu_usage", []) or [1])
+        cpu_percent = (cpu_delta / system_delta * online * 100) if system_delta else 0.0
+        memory = raw.get("memory_stats", {})
+        usage = float(memory.get("usage", 0))
+        limit = float(memory.get("limit", 1))
+        networks = raw.get("networks", {}).values()
+        rx = sum(float(n.get("rx_bytes", 0)) for n in networks) / 1024 / 1024
+        tx = sum(float(n.get("tx_bytes", 0)) for n in networks) / 1024 / 1024
+        return {"cpu_percent": cpu_percent, "memory_percent": usage / limit * 100, "net_rx_mb": rx, "net_tx_mb": tx}
 
     def _container(self, container_id: str) -> Any:
         if self.client is None:
