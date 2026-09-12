@@ -47,7 +47,7 @@ class VPSService:
             container = await asyncio.to_thread(self.docker.create, name=f"hx_{owner_id}_{spec.name.lower().replace(' ', '-')[:40]}", image=spec.image, cpu_cores=spec.cpu_cores, ram_mb=spec.ram_mb, host_port=port)
             await asyncio.to_thread(container.start)
             async with self.sessions() as session:
-                vps = VPS(owner_id=owner_id, name=spec.name.strip(), container_id=container.id, host_port=port, status="running", cpu_cores=spec.cpu_cores, ram_mb=spec.ram_mb, disk_gb=spec.disk_gb, image=spec.image)
+                vps = VPS(owner_id=owner_id, name=spec.name, container_id=container.id, host_port=port, status="running", cpu_cores=spec.cpu_cores, ram_mb=spec.ram_mb, disk_gb=spec.disk_gb, image=spec.image)
                 session.add(vps); await session.commit(); await session.refresh(vps); return self._dict(vps)
         except Exception:
             self.ports.release(port)
@@ -55,41 +55,40 @@ class VPSService:
             raise
 
     async def get(self, vps_id: int) -> dict[str, object] | None:
+        if not self.sessions: raise RuntimeError("VPS service is not configured")
         async with self.sessions() as session:
             vps = await session.get(VPS, vps_id); return self._dict(vps) if vps else None
 
     async def list_for_user(self, owner_id: int) -> list[dict[str, object]]:
+        if not self.sessions: raise RuntimeError("VPS service is not configured")
         async with self.sessions() as session:
             result = await session.scalars(select(VPS).where(VPS.owner_id == owner_id).order_by(VPS.id.desc()))
             return [self._dict(v) for v in result]
 
-    async def action(self, vps_id: int, action: str) -> dict[str, object]:
+    async def all_vps(self) -> list[dict[str, object]]:
+        if not self.sessions: raise RuntimeError("VPS service is not configured")
         async with self.sessions() as session:
-            vps = await session.get(VPS, vps_id)
-            if not vps or not vps.container_id or not self.docker: raise ValueError("VPS not found")
-            if action == "start": await asyncio.to_thread(self.docker.start, vps.container_id); vps.status = "running"
-            elif action == "stop": await asyncio.to_thread(self.docker.stop, vps.container_id); vps.status = "stopped"
-            elif action == "restart": await asyncio.to_thread(self.docker.restart, vps.container_id); vps.status = "running"
-            else: raise ValueError("unsupported VPS action")
-            await session.commit(); return self._dict(vps)
+            result = await session.scalars(select(VPS).order_by(VPS.id))
+            return [self._dict(v) for v in result]
+
+    async def action(self, vps_id: int, action: str) -> dict[str, object]:
+        vps = await self.get(vps_id)
+        if not vps or not vps.get("container_id") or not self.docker or not self.sessions: raise ValueError("VPS not found")
+        cid = str(vps["container_id"])
+        if action == "start": await asyncio.to_thread(self.docker.start, cid); status = "running"
+        elif action == "stop": await asyncio.to_thread(self.docker.stop, cid); status = "stopped"
+        elif action == "restart": await asyncio.to_thread(self.docker.restart, cid); status = "running"
+        else: raise ValueError("unsupported VPS action")
+        async with self.sessions() as session:
+            row = await session.get(VPS, vps_id); row.status = status; await session.commit(); return self._dict(row)
 
     async def rename(self, vps_id: int, owner_id: int, name: str) -> dict[str, object]:
         if not name.strip() or len(name) > 64: raise ValueError("invalid VPS name")
+        if not self.sessions: raise RuntimeError("VPS service is not configured")
         async with self.sessions() as session:
             vps = await session.get(VPS, vps_id)
             if not vps or vps.owner_id != owner_id: raise ValueError("VPS not found")
             vps.name = name.strip(); await session.commit(); return self._dict(vps)
-
-    async def reinstall(self, vps_id: int, owner_id: int, image: str) -> dict[str, object]:
-        if image not in self.ALLOWED_IMAGES or not self.docker: raise ValueError("Docker image is not allowed")
-        async with self.sessions() as session:
-            vps = await session.get(VPS, vps_id)
-            if not vps or vps.owner_id != owner_id or not vps.container_id or not vps.host_port: raise ValueError("VPS not found")
-            await asyncio.to_thread(self.docker.delete, vps.container_id)
-            container = await asyncio.to_thread(self.docker.create, name=f"hx_{owner_id}_{vps.name.lower().replace(' ', '-')[:40]}", image=image, cpu_cores=vps.cpu_cores, ram_mb=vps.ram_mb, host_port=vps.host_port)
-            await asyncio.to_thread(container.start)
-            vps.container_id, vps.image, vps.status = container.id, image, "running"
-            await session.commit(); return self._dict(vps)
 
     async def logs(self, vps_id: int) -> str:
         vps = await self.get(vps_id)
@@ -102,7 +101,7 @@ class VPSService:
         return await asyncio.to_thread(self.docker.stats, str(vps["container_id"]))
 
     async def delete(self, vps_id: int) -> None:
-        if not self.docker or not self.ports: raise RuntimeError("VPS service is not configured")
+        if not self.docker or not self.ports or not self.sessions: raise RuntimeError("VPS service is not configured")
         async with self.sessions() as session:
             vps = await session.get(VPS, vps_id)
             if not vps: raise ValueError("VPS not found")
