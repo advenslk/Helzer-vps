@@ -42,13 +42,10 @@ class VPSCog(commands.Cog):
     async def list_vps(self, interaction: discord.Interaction) -> None:
         items = await self.bot.service.list_for_user(interaction.user.id)
         layout = ui.LayoutView()
-        if items:
-            text = "\n".join(
-                f"**HX-{v['id']}** · `{v['name']}` · {E.RUNNING if v['status'] == 'running' else E.STOPPED} `{v['status']}`"
-                for v in items
-            )
-        else:
-            text = "No VPS instances yet. Use `/vps create` to provision one."
+        text = "\n".join(
+            f"**HX-{v['id']}** · `{v['name']}` · {E.RUNNING if v['status'] == 'running' else E.STOPPED} `{v['status']}`"
+            for v in items
+        ) or "No VPS instances yet. Use `/vps create` to provision one."
         layout.add_item(ui.Container(ui.TextDisplay(f"# {E.VPS} Your VPS\n{text}")))
         await interaction.response.send_message(view=layout, ephemeral=True)
 
@@ -71,10 +68,7 @@ class VPSCog(commands.Cog):
     async def create_vps(self, interaction: discord.Interaction, name: str, cpu: int, ram_mb: int, disk_gb: int, image: app_commands.Choice[str]) -> None:
         await interaction.response.defer(ephemeral=True)
         try:
-            vps = await self.bot.service.create_vps(
-                interaction.user.id,
-                VPSSpec(name=name, cpu_cores=cpu, ram_mb=ram_mb, disk_gb=disk_gb, image=image.value),
-            )
+            vps = await self.bot.service.create_vps(interaction.user.id, VPSSpec(name, cpu, ram_mb, disk_gb, image.value))
         except Exception as exc:
             await interaction.followup.send(f"{E.ERROR} Creation failed: `{exc}`", ephemeral=True)
             return
@@ -128,22 +122,31 @@ class VPSCog(commands.Cog):
             member = interaction.guild.get_member(request.target_user_id) if interaction.guild else None
             if member is None:
                 member = await self.bot.fetch_user(request.target_user_id)
-            vps = await self.bot.service.create_vps(
-                request.target_user_id,
-                VPSSpec(name=f"Helzer-{request.target_user_id}", cpu_cores=request.cpu_cores, ram_mb=request.ram_mb, disk_gb=request.disk_gb),
-            )
+            vps = await self.bot.service.create_vps(request.target_user_id, VPSSpec(f"Helzer-{request.target_user_id}", request.cpu_cores, request.ram_mb, request.disk_gb))
             try:
                 await member.send(
-                    f"# {E.SUCCESS} YOUR VPS IS READY\n"
-                    f"**Name:** `{vps['name']}`\n**ID:** `HX-{vps['id']}`\n"
-                    f"**CPU:** `{vps['cpu_cores']} cores`\n**RAM:** `{vps['ram_mb']} MB`\n"
-                    f"**Disk:** `{vps['disk_gb']} GB`\n**Image:** `{vps['image']}`"
+                    f"# {E.SUCCESS} YOUR VPS IS READY\n**Name:** `{vps['name']}`\n**ID:** `HX-{vps['id']}`\n"
+                    f"**CPU:** `{vps['cpu_cores']} cores`\n**RAM:** `{vps['ram_mb']} MB`\n**Disk:** `{vps['disk_gb']} GB`\n"
+                    f"**Image:** `{vps['image']}`\n\nPlease reply with your feedback about the setup."
                 )
             except discord.Forbidden:
                 pass
             await interaction.followup.send(f"{E.SUCCESS} Created `HX-{vps['id']}` for <@{request.target_user_id}> and attempted the DM notification.", ephemeral=True)
         except Exception as exc:
             await interaction.followup.send(f"{E.ERROR} AI operation failed: `{exc}`", ephemeral=True)
+
+    @admin.command(name="node", description="Show current Docker node capacity")
+    async def admin_node(self, interaction: discord.Interaction) -> None:
+        if not is_admin(interaction.user.id):
+            await interaction.response.send_message(f"{E.ERROR} Admin access required.", ephemeral=True)
+            return
+        capacity = self.bot.service.docker.capacity()
+        await interaction.response.send_message(
+            f"# {E.DOCKER} Node Capacity\n**CPU:** `{capacity['available_cpu']:.1f}/{capacity['total_cpu']:.1f}` cores available\n"
+            f"**RAM:** `{capacity['available_ram_mb']:.0f}/{capacity['total_ram_mb']:.0f}` MB available\n"
+            f"**Containers:** `{int(capacity['containers'])}`",
+            ephemeral=True,
+        )
 
     @admin.command(name="vps", description="Inspect a VPS as an administrator")
     @app_commands.describe(vps_id="VPS ID")
