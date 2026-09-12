@@ -17,6 +17,7 @@ class VPS(Base):
     owner_id: Mapped[int] = mapped_column(BigInteger, index=True)
     name: Mapped[str] = mapped_column(String(64))
     container_id: Mapped[str | None] = mapped_column(String(128), unique=True, nullable=True)
+    host_port: Mapped[int | None] = mapped_column(Integer, unique=True, nullable=True)
     status: Mapped[str] = mapped_column(String(24), default="pending")
     cpu_cores: Mapped[int] = mapped_column(Integer)
     ram_mb: Mapped[int] = mapped_column(Integer)
