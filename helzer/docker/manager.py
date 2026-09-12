@@ -27,9 +27,30 @@ class DockerManager:
             "restart_policy": {"Name": "unless-stopped"},
         }
 
+    def capacity(self, reserve_ram_mb: int = 256, reserve_cpu: int = 1) -> dict[str, float]:
+        info = self.client.info()
+        total_ram_mb = float(info.get("MemTotal", 0)) / 1024 / 1024
+        total_cpu = float(info.get("NCPU", 0))
+        containers = self.client.containers.list()
+        used_ram = sum(float(c.attrs.get("HostConfig", {}).get("Memory", 0)) for c in containers) / 1024 / 1024
+        used_cpu = sum(float(c.attrs.get("HostConfig", {}).get("NanoCpus", 0)) / 1_000_000_000 for c in containers)
+        return {
+            "total_ram_mb": total_ram_mb,
+            "available_ram_mb": max(0.0, total_ram_mb - used_ram - reserve_ram_mb),
+            "total_cpu": total_cpu,
+            "available_cpu": max(0.0, total_cpu - used_cpu - reserve_cpu),
+            "containers": float(len(containers)),
+        }
+
+    def can_fit(self, cpu_cores: int, ram_mb: int) -> bool:
+        capacity = self.capacity(reserve_ram_mb=256, reserve_cpu=1)
+        return capacity["available_cpu"] >= cpu_cores and capacity["available_ram_mb"] >= ram_mb
+
     def create(self, **kwargs: Any) -> Any:
         if self.client is None:
             raise RuntimeError("Docker client is not configured")
+        if not self.can_fit(int(kwargs["cpu_cores"]), int(kwargs["ram_mb"])):
+            raise RuntimeError("node does not have enough free CPU/RAM")
         return self.client.containers.create(**self.build_container_config(**kwargs))
 
     def start(self, container_id: str) -> None:
