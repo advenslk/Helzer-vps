@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import docker.errors
+
 
 class DockerManager:
     ALLOWED_IMAGES = frozenset({"ubuntu:24.04", "debian:12", "alpine:3.20"})
@@ -17,14 +19,9 @@ class DockerManager:
         if ram_mb < 128:
             raise ValueError("RAM must be at least 128 MB")
         config: dict[str, Any] = {
-            "name": name,
-            "image": image,
-            "mem_limit": ram_mb * 1024 * 1024,
-            "nano_cpus": cpu_cores * 1_000_000_000,
-            "detach": True,
-            "tty": True,
-            "stdin_open": True,
-            "restart_policy": {"Name": "unless-stopped"},
+            "name": name, "image": image, "mem_limit": ram_mb * 1024 * 1024,
+            "nano_cpus": cpu_cores * 1_000_000_000, "detach": True, "tty": True,
+            "stdin_open": True, "restart_policy": {"Name": "unless-stopped"},
         }
         if host_port is not None:
             if not 1024 <= host_port <= 65535:
@@ -48,6 +45,11 @@ class DockerManager:
     def create(self, **kwargs: Any) -> Any:
         if self.client is None:
             raise RuntimeError("Docker client is not configured")
+        image = str(kwargs["image"])
+        try:
+            self.client.images.get(image)
+        except docker.errors.ImageNotFound:
+            self.client.images.pull(image)
         if not self.can_fit(int(kwargs["cpu_cores"]), int(kwargs["ram_mb"])):
             raise RuntimeError("node does not have enough free CPU/RAM")
         return self.client.containers.create(**self.build_container_config(**kwargs))
@@ -78,8 +80,7 @@ class DockerManager:
         online = cpu.get("online_cpus") or len(cpu.get("cpu_usage", {}).get("percpu_usage", []) or [1])
         cpu_percent = (cpu_delta / system_delta * online * 100) if system_delta else 0.0
         memory = raw.get("memory_stats", {})
-        usage = float(memory.get("usage", 0))
-        limit = float(memory.get("limit", 1))
+        usage = float(memory.get("usage", 0)); limit = float(memory.get("limit", 1))
         networks = raw.get("networks", {}).values()
         rx = sum(float(n.get("rx_bytes", 0)) for n in networks) / 1024 / 1024
         tx = sum(float(n.get("tx_bytes", 0)) for n in networks) / 1024 / 1024
