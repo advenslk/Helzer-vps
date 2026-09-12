@@ -1,6 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from helzer.database.models import VPS
+from helzer.docker.manager import DockerManager
+from helzer.services.port_service import PortService
 
 
 @dataclass(frozen=True, slots=True)
@@ -13,32 +21,123 @@ class VPSSpec:
 
 
 class VPSService:
-    """Safe orchestration boundary for Docker VPS operations.
-
-    Discord commands and the AI assistant should call this service rather than
-    executing arbitrary Docker commands or shell input.
-    """
-
     ALLOWED_IMAGES = frozenset({"ubuntu:24.04", "debian:12", "alpine:3.20"})
 
+    def __init__(self, sessions: async_sessionmaker[AsyncSession], docker: DockerManager, ports: PortService):
+        self.sessions = sessions
+        self.docker = docker
+        self.ports = ports
+
     def validate_spec(self, spec: VPSSpec) -> None:
-        if spec.cpu_cores < 1:
-            raise ValueError("CPU cores must be at least 1")
-        if spec.ram_mb < 128:
-            raise ValueError("RAM must be at least 128 MB")
-        if spec.disk_gb < 1:
-            raise ValueError("disk must be at least 1 GB")
+        if not 1 <= spec.cpu_cores <= 32:
+            raise ValueError("CPU cores must be between 1 and 32")
+        if not 128 <= spec.ram_mb <= 131072:
+            raise ValueError("RAM must be between 128 MB and 128 GB")
+        if not 1 <= spec.disk_gb <= 2000:
+            raise ValueError("disk must be between 1 GB and 2000 GB")
+        if len(spec.name) > 64 or not spec.name.strip():
+            raise ValueError("invalid VPS name")
         if spec.image not in self.ALLOWED_IMAGES:
             raise ValueError("Docker image is not allowed")
 
-    async def create_vps(self, spec: VPSSpec) -> dict[str, object]:
-        self.validate_spec(spec)
-        # Docker provisioning will be wired here after DB/node scheduling exists.
+    @staticmethod
+    def _dict(vps: VPS) -> dict[str, object]:
         return {
-            "name": spec.name,
-            "status": "pending",
-            "cpu_cores": spec.cpu_cores,
-            "ram_mb": spec.ram_mb,
-            "disk_gb": spec.disk_gb,
-            "image": spec.image,
+            "id": vps.id,
+            "owner_id": vps.owner_id,
+            "name": vps.name,
+            "container_id": vps.container_id,
+            "status": vps.status,
+            "cpu_cores": vps.cpu_cores,
+            "ram_mb": vps.ram_mb,
+            "disk_gb": vps.disk_gb,
+            "image": vps.image,
         }
+
+    async def create_vps(self, owner_id: int, spec: VPSSpec) -> dict[str, object]:
+        self.validate_spec(spec)
+        port = self.ports.allocate()
+        container = None
+        try:
+            container = await asyncio.to_thread(
+                self.docker.create,
+                name=f"hx_{owner_id}_{spec.name.lower().replace(' ', '-')[:40]}",
+                image=spec.image,
+                cpu_cores=spec.cpu_cores,
+                ram_mb=spec.ram_mb,
+            )
+            await asyncio.to_thread(container.start)
+            async with self.sessions() as session:
+                vps = VPS(
+                    owner_id=owner_id,
+                    name=spec.name,
+                    container_id=container.id,
+                    status="running",
+                    cpu_cores=spec.cpu_cores,
+                    ram_mb=spec.ram_mb,
+                    disk_gb=spec.disk_gb,
+                    image=spec.image,
+                )
+                session.add(vps)
+                await session.commit()
+                await session.refresh(vps)
+                result = self._dict(vps)
+            result["port"] = port
+            return result
+        except Exception:
+            self.ports.release(port)
+            if container is not None:
+                await asyncio.to_thread(self.docker.delete, container.id)
+            raise
+
+    async def get(self, vps_id: int) -> dict[str, object] | None:
+        async with self.sessions() as session:
+            vps = await session.get(VPS, vps_id)
+            return self._dict(vps) if vps else None
+
+    async def list_for_user(self, owner_id: int) -> list[dict[str, object]]:
+        async with self.sessions() as session:
+            result = await session.scalars(select(VPS).where(VPS.owner_id == owner_id).order_by(VPS.id.desc()))
+            return [self._dict(v) for v in result]
+
+    async def action(self, vps_id: int, action: str) -> dict[str, object]:
+        async with self.sessions() as session:
+            vps = await session.get(VPS, vps_id)
+            if not vps or not vps.container_id:
+                raise ValueError("VPS not found")
+            container_id = vps.container_id
+            if action == "start":
+                await asyncio.to_thread(self.docker.start, container_id)
+                vps.status = "running"
+            elif action == "stop":
+                await asyncio.to_thread(self.docker.stop, container_id)
+                vps.status = "stopped"
+            elif action == "restart":
+                await asyncio.to_thread(self.docker.restart, container_id)
+                vps.status = "running"
+            else:
+                raise ValueError("unsupported VPS action")
+            await session.commit()
+            return self._dict(vps)
+
+    async def logs(self, vps_id: int) -> str:
+        vps = await self.get(vps_id)
+        if not vps or not vps.get("container_id"):
+            raise ValueError("VPS not found")
+        return await asyncio.to_thread(self.docker.logs, str(vps["container_id"]), 100)
+
+    async def stats(self, vps_id: int) -> dict[str, float]:
+        vps = await self.get(vps_id)
+        if not vps or not vps.get("container_id"):
+            raise ValueError("VPS not found")
+        return await asyncio.to_thread(self.docker.stats, str(vps["container_id"]))
+
+    async def delete(self, vps_id: int) -> None:
+        async with self.sessions() as session:
+            vps = await session.get(VPS, vps_id)
+            if not vps:
+                raise ValueError("VPS not found")
+            if vps.container_id:
+                await asyncio.to_thread(self.docker.delete, vps.container_id)
+            await session.delete(vps)
+            await session.commit()
