@@ -43,15 +43,10 @@ class VPSService:
     @staticmethod
     def _dict(vps: VPS) -> dict[str, object]:
         return {
-            "id": vps.id,
-            "owner_id": vps.owner_id,
-            "name": vps.name,
-            "container_id": vps.container_id,
-            "status": vps.status,
-            "cpu_cores": vps.cpu_cores,
-            "ram_mb": vps.ram_mb,
-            "disk_gb": vps.disk_gb,
-            "image": vps.image,
+            "id": vps.id, "owner_id": vps.owner_id, "name": vps.name,
+            "container_id": vps.container_id, "host_port": vps.host_port,
+            "status": vps.status, "cpu_cores": vps.cpu_cores, "ram_mb": vps.ram_mb,
+            "disk_gb": vps.disk_gb, "image": vps.image,
         }
 
     async def create_vps(self, owner_id: int, spec: VPSSpec) -> dict[str, object]:
@@ -65,25 +60,17 @@ class VPSService:
                 image=spec.image,
                 cpu_cores=spec.cpu_cores,
                 ram_mb=spec.ram_mb,
+                host_port=port,
             )
             await asyncio.to_thread(container.start)
             async with self.sessions() as session:
-                vps = VPS(
-                    owner_id=owner_id,
-                    name=spec.name,
-                    container_id=container.id,
-                    status="running",
-                    cpu_cores=spec.cpu_cores,
-                    ram_mb=spec.ram_mb,
-                    disk_gb=spec.disk_gb,
-                    image=spec.image,
-                )
+                vps = VPS(owner_id=owner_id, name=spec.name, container_id=container.id, host_port=port,
+                          status="running", cpu_cores=spec.cpu_cores, ram_mb=spec.ram_mb,
+                          disk_gb=spec.disk_gb, image=spec.image)
                 session.add(vps)
                 await session.commit()
                 await session.refresh(vps)
-                result = self._dict(vps)
-            result["port"] = port
-            return result
+                return self._dict(vps)
         except Exception:
             self.ports.release(port)
             if container is not None:
@@ -105,16 +92,12 @@ class VPSService:
             vps = await session.get(VPS, vps_id)
             if not vps or not vps.container_id:
                 raise ValueError("VPS not found")
-            container_id = vps.container_id
             if action == "start":
-                await asyncio.to_thread(self.docker.start, container_id)
-                vps.status = "running"
+                await asyncio.to_thread(self.docker.start, vps.container_id); vps.status = "running"
             elif action == "stop":
-                await asyncio.to_thread(self.docker.stop, container_id)
-                vps.status = "stopped"
+                await asyncio.to_thread(self.docker.stop, vps.container_id); vps.status = "stopped"
             elif action == "restart":
-                await asyncio.to_thread(self.docker.restart, container_id)
-                vps.status = "running"
+                await asyncio.to_thread(self.docker.restart, vps.container_id); vps.status = "running"
             else:
                 raise ValueError("unsupported VPS action")
             await session.commit()
@@ -139,5 +122,7 @@ class VPSService:
                 raise ValueError("VPS not found")
             if vps.container_id:
                 await asyncio.to_thread(self.docker.delete, vps.container_id)
+            if vps.host_port:
+                self.ports.release(vps.host_port)
             await session.delete(vps)
             await session.commit()
