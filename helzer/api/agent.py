@@ -107,6 +107,15 @@ class AgentAPI:
         except Exception as exc:
             return web.json_response({"error": str(exc)}, status=409)
 
+    async def user_vps(self, request: web.Request) -> web.Response:
+        denied = await self._guard(request)
+        if denied: return denied
+        try:
+            owner_id = int(request.match_info["owner_id"])
+            return web.json_response({"vps": await self.service.list_for_user(owner_id)})
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+
     async def get_vps(self, request: web.Request) -> web.Response:
         denied = await self._guard(request)
         if denied: return denied
