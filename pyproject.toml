@@ -1,6 +1,6 @@
 [project]
 name = "helzer-vps"
-version = "0.2.0"
+version = "0.3.0"
 description = "Discord-only AI powered Docker VPS hosting manager"
 requires-python = ">=3.11"
 dependencies = [
@@ -8,6 +8,7 @@ dependencies = [
   "docker>=7,<8",
   "SQLAlchemy>=2,<3",
   "aiosqlite>=0.21,<1",
+  "aiohttp>=3.12,<4",
 ]
 
 [project.optional-dependencies]
