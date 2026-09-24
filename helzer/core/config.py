@@ -13,6 +13,9 @@ class Settings:
     ai_model: str = ""
     ai_api_key: str = ""
     ai_endpoint: str = "https://api.openai.com/v1/chat/completions"
+    agent_api_host: str = "127.0.0.1"
+    agent_api_port: int = 8787
+    agent_api_token: str = ""
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -30,4 +33,7 @@ class Settings:
             ai_model=os.getenv("AI_MODEL", ""),
             ai_api_key=os.getenv("AI_API_KEY", ""),
             ai_endpoint=os.getenv("AI_ENDPOINT", "https://api.openai.com/v1/chat/completions"),
+            agent_api_host=os.getenv("AGENT_API_HOST", "127.0.0.1"),
+            agent_api_port=int(os.getenv("AGENT_API_PORT", "8787")),
+            agent_api_token=os.getenv("AGENT_API_TOKEN", ""),
         )
